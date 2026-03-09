@@ -1,0 +1,17 @@
+wcs代码中 
+在GetTack中调用数据库的WCS_GETTASK_P
+生成wms与wcs的任务
+
+wms-->Task表
+主要是出库/入库/波次
+
+wcs-->wcs_taskinfo表,wcs_subtaskinfo表
+
+location-->货位
+绑定容器
+
+containerinfo-->容器信息
+containerdetail-->容器详细信息
+
+输送机-->wcs_opcitem
+objects--db块   value--偏移量
