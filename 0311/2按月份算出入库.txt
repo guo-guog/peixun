@@ -1,0 +1,9 @@
+select
+    to_char(trunc(createtime,'MM'),'yyyy-mm') as month,
+    sum(case when tasktypecode = 'Task_OutBound' then pickqty else 0 end) as outbound_sum,
+    sum(case when tasktypecode = 'Task_InBound' then pickqty else 0 end) as inbound_sum
+from finishedtask
+where createtime >= date '2025-01-01'
+and createtime <  date '2026-01-01'
+group by trunc(createtime,'MM')
+order by month;

@@ -1,0 +1,14 @@
+-- 查询出最近一个月的出库任务 入库任务  wms任务号,wcs任务号 物料编码  物料名称 任务创建时间,任务完成时间
+--出库:
+select ft.tasktypecode,ft.tasknumber,c.taskno,ft.itemid,c.itemname,ft.createtime,ft.finishdate
+from finishedtask ft,wcs_taskinfo_history c
+where ft.createtime >= date'2025-10-01' and ft.createtime < date '2025-11-01'
+and ft.tasknumber = c.wmstaskno
+and ft.tasktypecode = 'Task_OutBound'
+
+--入库:
+select ft.tasktypecode,ft.tasknumber,c.taskno,ft.itemid,c.itemname,ft.createtime,ft.finishdate
+from finishedtask ft,wcs_taskinfo_history c
+where ft.createtime >= date'2025-10-01' and ft.createtime < date '2025-11-01'
+and ft.tasknumber = c.wmstaskno
+and ft.tasktypecode = 'Task_InBound'

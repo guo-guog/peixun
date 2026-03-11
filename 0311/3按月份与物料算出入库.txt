@@ -1,0 +1,19 @@
+-- 分组统计出 2025 年 每个月的出库总数,入库总数 按照月份的维度 按照物料
+SELECT
+   TO_CHAR(TRUNC(f.createtime,'MM'),'YYYY-MM') AS month,
+   f.itemid,
+   h.itemname,
+   SUM(CASE WHEN f.tasktypecode='Task_OutBound' THEN f.pickqty ELSE 0 END) AS outbound_qty,
+   SUM(CASE WHEN f.tasktypecode='Task_InBound' THEN f.pickqty ELSE 0 END) AS inbound_qty
+FROM finishedtask f
+LEFT JOIN (
+   SELECT itemno, MIN(itemname) itemname
+   FROM wcs_taskinfo_history
+   GROUP BY itemno
+) h
+ON h.itemno = f.itemid
+WHERE f.createtime >= DATE '2025-01-01'AND f.createtime < DATE '2026-01-01'
+AND f.tasktypecode IN ('Task_OutBound','Task_InBound')
+GROUP BY
+   TRUNC(f.createtime,'MM'),f.itemid,h.itemname
+ORDER BY month, f.itemid;

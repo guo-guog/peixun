@@ -1,0 +1,23 @@
+-- 当前库存: 按照物料分组+ 列 统计  列1  物料A  10 
+SELECT
+    c.itemid,
+    wth.itemname,
+    l.locationnumber,
+    l.locationcolumn,
+    c.containerid,
+    SUM(c.qty) AS total_qty
+FROM containerdetail c
+JOIN location l
+    ON c.containerid = l.containerid
+LEFT JOIN (
+    SELECT itemno, MIN(itemname) AS itemname
+    FROM wcs_taskinfo_history
+    GROUP BY itemno
+) wth
+    ON c.itemid = wth.itemno
+GROUP BY
+    c.itemid,l.locationnumber,l.locationcolumn,wth.itemname,c.containerid
+ORDER BY
+    l.locationnumber,c.itemid;
+
+这个东西似乎没搞好呀,说是每列表示都直接输出出来等于没统计

@@ -1,0 +1,59 @@
+出库时间-->containerdetail   outbounddate
+
+//最近x个月
+select *
+from containerdetail
+where outbounddate >= add_months(SYSDATE, -5)
+  and outbounddate <= SYSDATE;
+
+//具体从date1到date2
+select *
+from containerdetail
+where outbounddate >= date '2025-10-01'
+  and outbounddate <  date '2025-11-01';
+
+入库时间-->lacation  inbounddate
+
+select *
+from location
+where inbounddate >= (add_months(SYSDATE, -5) - date '2006-12-01') * 86400
+  and inbounddate <  (SYSDATE - date '2006-12-01') * 86400;
+
+wms任务号-->TASK  TASKNUMBER
+wcs_taskinfo  wmstaskno
+
+select *
+from task
+//from taskhistory
+//from finishedtask
+where tasknumber LIKE 'T-202510%';
+
+wcs任务号-->wcs_taskinfo  taskno
+
+select * 
+from wcs_taskinfo
+//from wcs_taskinfohistory
+where createtime >=date'2025-10-01' and createtime<date'2025-11-01'
+
+物料编号-->wcs_taskinfo  itemno  
+itemid在task中 containerdetail中 wcs_opcitem中
+
+物料名称-->wcs_taskinfo  itemname
+containerdetail  itemname
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
