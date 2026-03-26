@@ -1,0 +1,131 @@
+CREATE OR REPLACE PROCEDURE wcs_scgettask_p(i_warehouseid IN wcs_taskinfo.warehouseid%TYPE, --仓库ID
+                                            i_scstatus    IN VARCHAR2, --堆垛机参数
+                                            o_taskinfo    OUT SYS_REFCURSOR) IS
+  --任务结果集
+  /***********************************************************************
+  Author: Joho
+  Name：wcs_scgettask_p
+  CreateDate:   2017/08/31 15:31:25
+  Description： 堆垛机获取任务
+  **********************************************************************/
+  v_taskinfo        SYS_REFCURSOR; --结果游标
+  v_count           INTEGER; --判断是否存在数据
+  v_taskcount       INTEGER; --判断是否存在任务
+  v_equipmentnumber VARCHAR2(50); --设备编号
+  v_statecode       VARCHAR2(50); --设备状态
+  o_result          INTEGER; --存过处理结果
+  o_wmscount        INTEGER; --调WMS存过处理结果
+  
+BEGIN
+  v_taskinfo  := NULL;
+  o_result    := 0;
+  o_taskinfo  := NULL;
+  v_taskcount := 0;
+  v_count     := length(i_scstatus) / 3;
+  IF (v_count = 1) THEN
+   select CASE substr(i_scstatus, v_count * 3, 1)
+             WHEN '0' THEN
+              'Equipment_Error'
+             WHEN '1' THEN
+              'Equipment_OK'
+           END
+   into v_statecode
+   from dual;
+   
+   SELECT CASE substr(i_scstatus, v_count * 3 - 2, 1)
+               WHEN '0' THEN
+                'SC0' || substr(i_scstatus, v_count * 3 - 1, 1)
+               ELSE
+                'SC0' || substr(i_scstatus, v_count * 3 - 2, 2)
+             END
+        INTO v_equipmentnumber
+        FROM dual;
+    
+   merge into equipment e
+using (select v_statecode statecode, v_equipmentnumber equipmentnumber from dual) e2
+on (e.equipmentnumber = e2.equipmentnumber )
+when matched then
+  update
+     set e.statecode = e2.statecode
+   where  e.statecode <> e2.statecode;    
+        
+    
+  /* 
+    UPDATE equipment
+       SET statecode =
+           (CASE substr(i_scstatus, v_count * 3, 1)
+             WHEN '0' THEN
+              'Equipment_Error'
+             WHEN '1' THEN
+              'Equipment_OK'
+           END)
+     WHERE warehouseid = i_warehouseid
+       AND equipmentnumber =
+           CASE substr(i_scstatus, v_count * 3 - 2, 1)
+             WHEN '0' THEN
+              'SC0' || substr(i_scstatus, v_count * 3 - 1, 1)
+             ELSE
+              'SC0' || substr(i_scstatus, v_count * 3 - 2, 2)
+           END; */
+    --设备状态正常 获取WMS任务
+    IF (substr(i_scstatus, v_count * 3, 1) = '1') THEN
+      --WCS从WMS中获取任务
+      /*SELECT CASE substr(i_scstatus, v_count * 3 - 2, 1)
+               WHEN '0' THEN
+                'SC0' || substr(i_scstatus, v_count * 3 - 1, 1)
+               ELSE
+                'SC0' || substr(i_scstatus, v_count * 3 - 2, 2)
+             END
+        INTO v_equipmentnumber
+        FROM dual;*/
+        wcs_createeventlog_p(i_warehouseid,
+                                v_equipmentnumber|| ',test 01');
+      wcs_getwmsoutboundtask_p(i_warehouseid,
+                               v_equipmentnumber,
+                               '',
+                               'WCS',
+                               o_wmscount,
+                               o_result); 
+      --执行中任务数量  
+      SELECT COUNT(1)
+        INTO v_taskcount
+        FROM wcs_subtaskinfo
+       WHERE warehouseid = i_warehouseid
+         AND equipmentnumber = v_equipmentnumber
+         AND equipmenttype = 'SC'
+         AND taskstatus = '2';
+    
+      IF (v_taskcount = 0) THEN
+        wcs_scgetoutboundtask_p(i_warehouseid,
+                                v_equipmentnumber,
+                                'WCS',
+                                o_result,
+                                v_taskinfo);
+        o_taskinfo := v_taskinfo;
+      END IF;
+    END IF;
+  END IF;
+  IF o_taskinfo IS NULL THEN
+    OPEN o_taskinfo FOR
+      SELECT taskno, fromstation, tostation, barcode, '' endstation
+        FROM wcs_subtaskinfo
+       WHERE 1 = 2;
+  END IF;
+  COMMIT;
+EXCEPTION
+  WHEN no_data_found THEN
+    OPEN o_taskinfo FOR
+      SELECT taskno, fromstation, tostation, barcode, '' endstation
+        FROM wcs_subtaskinfo
+       WHERE 1 = 2;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_scgettask_p出错,找不到数据' ||
+                                      SQLERRM);
+  WHEN OTHERS THEN
+    OPEN o_taskinfo FOR
+      SELECT taskno, fromstation, tostation, barcode, '' endstation
+        FROM wcs_subtaskinfo
+       WHERE 1 = 2;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_scgettask_p出错:' || SQLERRM);
+END wcs_scgettask_p;

@@ -1,0 +1,512 @@
+CREATE OR REPLACE PROCEDURE "WCS_INSERTINBOUNDTASK_P"(i_warehouseid     IN wcs_taskinfo.warehouseid%TYPE,
+                                                      i_wmstaskno       IN VARCHAR2,
+                                                      i_barcode         IN VARCHAR2,
+                                                      i_formstation     IN VARCHAR2,
+                                                      i_tostation       IN VARCHAR2,
+                                                      i_priority        IN VARCHAR2,
+                                                      i_tasktype        IN VARCHAR2,
+                                                      i_taskstatus      IN VARCHAR2,
+                                                      i_ledtext         IN VARCHAR2,
+                                                      i_wmsorderno      IN VARCHAR2,
+                                                      i_wmsorderqty     IN NUMBER,
+                                                      i_wmsbatchno      IN VARCHAR2,
+                                                      i_wmswmsgroupno   IN VARCHAR2,
+                                                      i_wmssequenceno   IN VARCHAR2,
+                                                      i_itemno          IN VARCHAR2,
+                                                      i_itemname        IN VARCHAR2,
+                                                      i_itemqty         IN NUMBER,
+                                                      i_userid          IN VARCHAR2,
+                                                      i_taskno          IN NUMBER, --WCS任务号,
+                                                      i_equipmentnumber IN VARCHAR2,
+                                                      o_result          OUT INTEGER) AS
+  v_taskno    NUMBER;
+  v_toconvery VARCHAR2(10);
+  v_runstatus VARCHAR2(10);
+  v_ikey      NUMBER;
+  v_priority  VARCHAR2(2);
+  v_tasktype  wcs_taskinfo.tasktype%TYPE;
+  v_stvfromno wcs_route.stvfromno%TYPE;
+  v_stvtono   wcs_route.stvtono%TYPE;
+BEGIN
+  v_runstatus := '1';
+  --获取主任务号
+  v_priority := '0';
+  v_taskno   := i_taskno;
+  o_result   := 0;
+  v_tasktype := 'Task_InBound';
+  --添加主任务
+  wcs_inserttaskinfo_p(i_warehouseid,
+                       i_wmstaskno,
+                       i_barcode,
+                       i_formstation,
+                       i_tostation,
+                       i_priority,
+                       v_tasktype,
+                       i_taskstatus,
+                       i_ledtext,
+                       i_wmsorderno,
+                       i_wmsorderqty,
+                       i_wmsbatchno,
+                       i_wmswmsgroupno,
+                       i_wmssequenceno,
+                       i_itemno,
+                       i_itemname,
+                       i_itemqty,
+                       i_userid,
+                       i_taskno,
+                       i_equipmentnumber,
+                       o_result);
+
+  IF (o_result > 0) THEN
+    o_result := 1;
+  ELSE
+    raise_application_error(-20000,
+                            '存储过程wcs_insertinboundtask_p,写入WCS主表的入库任务失败');
+  END IF;
+
+  IF (i_warehouseid = '8328b8331dbd42599c786684c1e304a3') --成品库的任务明细表的写法
+   THEN
+    IF length(i_formstation) = 4 AND length(i_tostation) = 4 THEN
+      --写入输送机入库任务
+      INSERT INTO wcs_subtaskinfo
+        (subtaskno,
+         taskno,
+         equipmenttype,
+         fromstation,
+         tostation,
+         currentstation,
+         taskstatus,
+         barcode,
+         field1,
+         field2,
+         createtime,
+         warehouseid,
+         userid,
+         runstatus,
+         equipmentnumber)
+      VALUES
+        (sys_guid(),
+         v_taskno,
+         'STA',
+         i_formstation,
+         i_tostation,
+         i_formstation,
+         '0',
+         i_barcode,
+         i_wmstaskno,
+         i_tasktype,
+         SYSDATE,
+         i_warehouseid,
+         i_userid,
+         '1',
+         i_equipmentnumber);
+    
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+      ELSE
+        raise_application_error(-20000,
+                                '写入WCS明细表的输送机入库任务失败');
+      END IF;
+    
+    ELSE
+      IF (i_formstation >= 5132 AND i_formstation <= 5148) OR
+         i_formstation = 5229 THEN
+        --余料暂存工位
+        SELECT converytono, stvfromno, stvtono
+          INTO v_toconvery, v_stvfromno, v_stvtono
+          FROM wcs_route
+         WHERE warehouseid = i_warehouseid
+           AND converyfromno = '5142'
+           AND toscno = i_equipmentnumber;
+      ELSE
+        SELECT converytono
+          INTO v_toconvery
+          FROM wcs_route
+         WHERE warehouseid = i_warehouseid
+           AND converyfromno = i_formstation
+           AND toscno = i_equipmentnumber;
+      END IF;
+    
+      o_result := 0;
+    
+      --写入输送机入库任务
+      INSERT INTO wcs_subtaskinfo
+        (subtaskno,
+         taskno,
+         equipmenttype,
+         fromstation,
+         tostation,
+         currentstation,
+         taskstatus,
+         barcode,
+         createtime,
+         warehouseid,
+         userid,
+         runstatus,
+         equipmentnumber,
+         field1,
+         field2)
+      VALUES
+        (sys_guid(),
+         v_taskno,
+         'STA',
+         i_formstation,
+         v_toconvery,
+         i_formstation,
+         '0',
+         i_barcode,
+         SYSDATE,
+         i_warehouseid,
+         i_userid,
+         v_runstatus,
+         '',
+         i_wmstaskno,
+         i_tasktype);
+    
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+      ELSE
+        raise_application_error(-20000,
+                                '写入WCS明细表的输送机入库任务失败');
+      END IF;
+    
+      --写入堆垛机入库任务
+      v_runstatus := '0';
+      o_result    := 0;
+    
+      INSERT INTO wcs_subtaskinfo
+        (subtaskno,
+         taskno,
+         equipmenttype,
+         fromstation,
+         tostation,
+         currentstation,
+         taskstatus,
+         barcode,
+         createtime,
+         warehouseid,
+         userid,
+         runstatus,
+         equipmentnumber,
+         field1,
+         field2)
+      VALUES
+        (sys_guid(),
+         v_taskno,
+         'SC',
+         v_toconvery,
+         i_tostation,
+         v_toconvery,
+         '0',
+         i_barcode,
+         SYSDATE,wcs_insertinboundtask_p
+         i_warehouseid,
+         i_userid,
+         v_runstatus,
+         i_equipmentnumber,
+         i_wmstaskno,
+         i_tasktype);
+    
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+      ELSE
+        raise_application_error(-20000,
+                                '写入WCS明细表的堆垛机入库任务失败');
+      END IF;
+    END IF;
+  END IF;
+
+  IF (i_warehouseid = '57274b9c55464753b8bd7a0df96421f2') --片烟库的入库任务明细表的写法
+   THEN
+    SELECT converytono
+      INTO v_toconvery
+      FROM wcs_route
+     WHERE warehouseid = i_warehouseid
+       AND converyfromno = i_formstation
+       AND toscno = i_equipmentnumber;
+  
+    o_result := 0;
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000, '片烟库入库，获取输送机地址路径失败');
+    END IF;
+  
+    --写入输送机入库任务
+    INSERT INTO wcs_subtaskinfo
+      (subtaskno,
+       taskno,
+       equipmenttype,
+       fromstation,
+       tostation,
+       currentstation,
+       taskstatus,
+       barcode,
+       createtime,
+       warehouseid,
+       userid,
+       runstatus,
+       equipmentnumber,
+       field3)
+    VALUES
+      (sys_guid(),
+       v_taskno,
+       'STA',
+       i_formstation,
+       v_toconvery,
+       i_formstation,
+       '0',
+       i_barcode,
+       SYSDATE,
+       i_warehouseid,
+       i_userid,
+       v_runstatus,
+       '',
+       i_tasktype);
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000,
+                              '片烟库，写入WCS明细表的输送机入库任务失败');
+    END IF;
+  
+    --写入堆垛机入库任务
+    v_runstatus := '0';
+    o_result    := 0;
+  
+    INSERT INTO wcs_subtaskinfo
+      (subtaskno,
+       taskno,
+       equipmenttype,
+       fromstation,
+       tostation,
+       currentstation,
+       taskstatus,
+       barcode,
+       createtime,
+       warehouseid,
+       userid,
+       runstatus,
+       equipmentnumber,
+       field3)
+    VALUES
+      (sys_guid(),
+       v_taskno,
+       'SC',
+       v_toconvery,
+       i_tostation,
+       '',
+       '0',
+       i_barcode,
+       SYSDATE,
+       i_warehouseid,
+       i_userid,
+       v_runstatus,
+       i_equipmentnumber,
+       i_tasktype);
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000,
+                              '片烟库，写入WCS明细表的堆垛机入库任务失败');
+    END IF;
+  END IF;
+
+  IF (i_warehouseid = 'ab933387cffe489cb65b29665d0c58e5') --烟丝库的入库任务明细表的写法
+   THEN
+    SELECT MOD(v_taskno, 10000) INTO v_ikey FROM dual;
+  
+    IF (v_ikey = 0) THEN
+      v_ikey := 5000;
+    END IF;
+    v_priority := (CASE
+                    WHEN i_formstation BETWEEN '101' AND '113' THEN
+                     '4'
+                    WHEN i_formstation BETWEEN '114' AND '119' THEN
+                     '5'
+                    WHEN i_formstation IN ('201', '202') THEN
+                     '5'
+                    WHEN i_formstation IN ('203', '204') THEN
+                     '5'
+                    WHEN i_formstation = '205' THEN
+                     '4'
+                    WHEN i_formstation = '301' THEN
+                     '3'
+                    WHEN i_formstation = '302' THEN
+                     '5'
+                  END);
+  
+    INSERT INTO wcs_subtaskinfo
+      (subtaskno,
+       taskno,
+       equipmenttype,
+       fromstation,
+       midstation,
+       tostation,
+       currentstation,
+       taskstatus,
+       barcode,
+       createtime,
+       warehouseid,
+       userid,
+       runstatus,
+       equipmentnumber,
+       agvikey,
+       agvstatus,
+       field5)
+    VALUES
+      (sys_guid(),
+       v_taskno,
+       'AGV',
+       i_formstation,
+       i_tostation,
+       '',
+       v_toconvery,
+       '0',
+       i_barcode,
+       SYSDATE,
+       i_warehouseid,
+       i_userid,
+       v_runstatus,
+       i_equipmentnumber,
+       v_ikey,
+       '0',
+       v_priority);
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000,
+                              '烟丝库，存储过程wcs_insertinboundtask_p写入WCS明细表的堆垛机入库任务失败');
+    END IF;
+  END IF;
+
+  IF (i_warehouseid = '6343d09d35a641e0a9ad942a255d4707') THEN
+    --辅料库入库
+    SELECT converytono
+      INTO v_toconvery
+      FROM wcs_route
+     WHERE warehouseid = i_warehouseid
+       AND converyfromno = i_formstation
+       AND toscno = i_equipmentnumber
+       AND tasktype = 'Task_InBound'
+       AND rownum < 2;
+  
+    o_result := 0;
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000, '辅料库入库，获取输送机地址路径失败');
+    END IF;
+  
+    --写入输送机入库任务
+    INSERT INTO wcs_subtaskinfo
+      (subtaskno,
+       taskno,
+       equipmenttype,
+       fromstation,
+       tostation,
+       currentstation,
+       taskstatus,
+       barcode,
+       createtime,
+       warehouseid,
+       userid,
+       runstatus,
+       equipmentnumber)
+    VALUES
+      (sys_guid(),
+       v_taskno,
+       'STA',
+       i_formstation,
+       v_toconvery,
+       i_formstation,
+       '0',
+       i_barcode,
+       SYSDATE,
+       i_warehouseid,
+       i_userid,
+       v_runstatus,
+       '');
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000,
+                              '辅料库，写入WCS明细表的输送机入库任务失败');
+    END IF;
+  
+    --写入堆垛机入库任务
+    v_runstatus := '0';
+    o_result    := 0;
+  
+    INSERT INTO wcs_subtaskinfo
+      (subtaskno,
+       taskno,
+       equipmenttype,
+       fromstation,
+       tostation,
+       currentstation,
+       taskstatus,
+       barcode,
+       createtime,
+       warehouseid,
+       userid,
+       runstatus,
+       equipmentnumber)
+    VALUES
+      (sys_guid(),
+       v_taskno,
+       'SC',
+       v_toconvery,
+       i_tostation,
+       v_toconvery,
+       '0',
+       i_barcode,
+       SYSDATE,
+       i_warehouseid,
+       i_userid,
+       v_runstatus,
+       i_equipmentnumber);
+  
+    IF (SQL%ROWCOUNT > 0) THEN
+      o_result := 1;
+    ELSE
+      raise_application_error(-20000,
+                              '辅料库，写入WCS明细表的堆垛机入库任务失败');
+    END IF;
+  END IF;
+  IF (length(v_stvfromno) = 4 AND length(v_stvtono) = 4 AND
+     i_warehouseid = '8328b8331dbd42599c786684c1e304a3') THEN
+    --添加环穿任务 by chenjh 2013,12,23
+    wcs_addstvtaskcp_p(i_warehouseid,
+                       i_taskno,
+                       v_stvfromno,
+                       v_stvtono,
+                       '0',
+                       i_tasktype,
+                       i_barcode,
+                       i_userid,
+                       i_wmstaskno,
+                       o_result);
+  END IF;
+  IF (o_result = 1) THEN
+    COMMIT;
+  END IF;
+EXCEPTION
+  WHEN no_data_found THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_insertinboundtask_p报错,找不到数据.');
+  WHEN OTHERS THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程 wcs_insertinboundtask_p报错:' ||
+                                      SQLERRM);
+END wcs_insertinboundtask_p;

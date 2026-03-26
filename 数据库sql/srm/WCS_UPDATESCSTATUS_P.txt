@@ -1,0 +1,61 @@
+CREATE OR REPLACE PROCEDURE WCS_UPDATESCSTATUS_P(i_equipmentnumber IN VARCHAR2,
+                                                 i_position        IN VARCHAR2,
+                                                 i_mode            IN VARCHAR2,
+                                                 i_taskno          IN VARCHAR2,
+                                                 i_fromstation     IN VARCHAR2,
+                                                 i_tostation       IN VARCHAR2,
+                                                 i_alarmMessage    IN VARCHAR2,
+                                                 o_result          OUT INTEGER) AS
+  v_count int;
+BEGIN
+  select count(*)
+    into v_count
+    from wcs_equipmentstatus
+   where equipmenttype = i_equipmentnumber;
+  if v_count > 0 then
+    UPDATE wcs_equipmentstatus
+       SET statuscode       = i_mode,
+           statusdecription = i_alarmMessage,
+           field1           = i_position,
+           field2           = i_fromstation,
+           field3           = i_tostation,
+           field4           = i_taskno
+     WHERE equipmenttype = i_equipmentnumber;
+  else
+    insert into wcs_equipmentstatus
+      (statuscode,
+       statusdecription,
+       equipmenttype,
+       field1,
+       field2,
+       field3,
+       field4)
+    values
+      (i_mode,
+       i_alarmMessage,
+       i_equipmentnumber,
+       i_position,
+       i_fromstation,
+       i_tostation,
+       i_taskno);
+  end if;
+  IF (SQL%ROWCOUNT > 0) THEN
+    COMMIT;
+    o_result := 1;
+  ELSE
+    ROLLBACK;
+    o_result := 0;
+  END IF;
+EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => '8328b8331dbd42599c786684c1e304a3',
+                     i_logtext     => '存储过程WCS_UPDATESCSTATUS_P出错，找不到数据');
+  WHEN OTHERS THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => '8328b8331dbd42599c786684c1e304a3',
+                     i_logtext     => '存储过程WCS_UPDATESCSTATUS_P出错:' ||
+                                      SQLERRM);
+END WCS_UPDATESCSTATUS_P;

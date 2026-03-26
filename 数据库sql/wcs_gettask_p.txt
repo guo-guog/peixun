@@ -1,0 +1,1126 @@
+CREATE OR REPLACE PROCEDURE wcs_gettask_p(i_warehouseid IN wcs_taskinfo.warehouseid%TYPE, --仓库编号
+                                          i_taskno      IN VARCHAR2, --任务号
+                                          i_barcode     IN VARCHAR2, --预留字段
+                                          i_goodstype   IN VARCHAR2, --货物类型
+                                          i_fromstation IN VARCHAR2, --起始地址
+                                          i_tostation   IN VARCHAR2, --目标地址
+                                          i_checkinfo   IN VARCHAR2, --外形检测/是否需要烟箱码
+                                          i_items       IN VARCHAR2, --物料条码集
+                                          i_docktype    IN VARCHAR2, --垛形28件、30件、24件
+                                          i_boxqty      IN VARCHAR2, --烟箱数量
+                                          i_needqty     IN VARCHAR2, --要取数量
+                                          i_boxstatus   IN VARCHAR2, --码垛状态
+                                          i_boxtype     IN VARCHAR2, --烟箱类型
+                                          i_emptyneed   IN INTEGER,  --空盘需求量
+                                          o_result      OUT INTEGER, --执行成功标志
+                                          o_msg         OUT VARCHAR2 --返回信息
+                                          ) IS
+  /***********************************************************************
+  Author: zh
+  Name：wcs_gettask_p
+  CreateDate:   2019年4月16日 14:08:09
+  Description： 与输送机业务处理
+  Apply Warehouse： 蚌埠成品库
+  **********************************************************************/
+  v_stationtype       VARCHAR2(10); --站台类型
+  v_barcode           VARCHAR2(50) := i_barcode; --托盘条码
+  v_result            INT; --处理标记
+  v_taskno            NUMBER := i_taskno; --任务号
+  v_goodstype         VARCHAR2(10) := i_goodstype; --货物类型
+  v_docktype          VARCHAR2(30) := i_docktype; --垛型
+  v_boxtype           VARCHAR2(30) := i_boxtype; --烟箱类型
+  v_boxstatus         VARCHAR2(30) := i_boxstatus; --垛型状态
+  v_tostation         VARCHAR2(20) := i_tostation; --目标站台
+  v_fromstation       VARCHAR2(20) := i_fromstation; --起始站台
+  v_tasktostation     VARCHAR2(20);
+  v_ledtext           VARCHAR2(200); --日志
+  v_items             VARCHAR2(1000);
+  v_itemflag          INT;
+  v_tosort            varchar(10);--任务对应分拣月台
+  v_count             INT;
+  v_taskcount1        INT;
+  v_taskcount2        INT;
+  v_itembarcode       VARCHAR2(50);
+  v_field2            VARCHAR2(30);
+  v_field3            wcs_targetaddressinfo.field4%TYPE;
+  v_field4            wcs_targetaddressinfo.field4%TYPE;
+  v_palletmode        INT; --烟箱类型
+  v_foldprofile       INT; --码垛垛型
+  v_splitconfirm      INT; --拆跺允许
+  v_qty               INT := i_boxqty;
+  v_needqty           INT := i_needqty;
+  v_opcitemfied3      VARCHAR2(50);
+  v_field1            VARCHAR2(10);
+  v_ifsucess          INT;
+  v_taskinfo          SYS_REFCURSOR;
+  v_wmstaskno         task.tasknumber%TYPE;
+  v_equipmentnumber   equipment.equipmentnumber%TYPE;
+  v_sourceaddressid   task.sourceaddressid%TYPE;
+  v_sourceaddresstype task.sourceaddresstype%TYPE;
+  v_sourceaddresstext task.sourceaddresstext%TYPE;
+  v_targetaddressid   task.targetaddressid%TYPE;
+  v_targetaddresstext task.targetaddresstext%TYPE;
+  v_targetaddresstype task.targetaddresstype%TYPE;
+  v_tasktypecode      task.tasktypecode%TYPE;
+  v_containerid       task.containerid%TYPE;
+  v_containerbarcode  task.containerbarcode%TYPE;
+  v_groupnumber       task.groupnumber%TYPE;
+  v_lgvexist          task.lgvexist%TYPE;
+  v_itemid            task.itemid%TYPE;
+  v_insertwmsflag     INT;
+  v_operationqty      task.operationqty%TYPE;
+  o_wmscount          INT;
+  v_EmptyPalletResult INT:=0;
+  v_emptyout          INT :=0;
+  v_params            varchar2(500);
+BEGIN
+ /* v_params := 'WH：' || i_warehouseid || '; TN：' || i_taskno || '; BC：' ||
+            i_barcode || '; ST：' || i_goodstype || '; FS：' || i_fromstation ||
+            '; TS：' || i_tostation || '; i_checkinfo：' || i_checkinfo ||
+            '; i_items：' || i_items || '; i_docktype：' ||
+            i_docktype|| '; i_boxqty：' || i_boxqty ||
+            '; i_needqty：' || i_needqty || '; i_boxstatus：' ||
+            i_boxstatus ||'; i_boxtype：' ||
+            i_boxtype|| '; i_emptyneed：' || i_emptyneed ;*/
+  /*
+  1.stationtype=1 入库申请
+  3.stationtype=3 输送机出入库到位申请
+  4.stationtype=4 拆跺站台申请
+  5.stationtype=5 读取RFID核对
+  6.stationtype=6 堆垛机出库站台到位申请
+  7.stationtype=7 其他站台入库申请
+  8.stationtype=8  质检任务
+  9.stationtype=9 散盘申请站台
+  10.stationtype=10 质检盘点站台申请(出库到位或入库申请)
+  11.stationtype=11 选择出库目标点
+  12.stationtype=12 余料回库站台、空托盘入库中转站台
+  13.stationtype=13 异常处理
+  */
+  /*
+    1.i_goodstype=1 空托盘
+    2.i_goodstype=2 实托盘
+    3.i_goodstype=3 空托盘组
+    4.i_goodstype=4 余料
+  */
+  v_result    := 0;
+  v_tostation := '0';
+  v_ledtext   := '';
+  v_itemflag  := 0;
+  v_count     := 0;
+  o_msg       := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+                 i_barcode || ';GS:' || i_goodstype || ';FS:' ||
+                 i_fromstation || ';TS:' || i_tostation || ';BT:' || v_boxtype 
+                 || ';NQ:' || i_needqty || ';BQ:' || i_boxqty || ';DT:' ||
+                 i_docktype  || ';BS:' || i_boxstatus|| ';SC:' || '0' || ';MSG:' ||
+                 v_ledtext;
+
+  SELECT COUNT(1)
+    INTO v_count
+    FROM wcs_opcitem
+   WHERE stationno = i_tostation
+     AND warehouseid = i_warehouseid
+     AND groupname = 'Convery'
+     AND status = 1;
+  IF v_count = 1 THEN
+    SELECT stationtype
+      INTO v_stationtype
+      FROM wcs_opcitem
+     WHERE stationno = i_tostation
+       AND warehouseid = i_warehouseid
+       AND groupname = 'Convery'
+       AND status = 1;
+       
+   /* IF(i_tostation = '5228' and i_taskno < 10000 and i_goodstype = 3) THEN
+     v_stationtype :=1;
+    END IF;  */
+  ELSE
+    o_result  := 0;
+    v_ledtext := i_tostation || '站台申请失败,没有找到相应的站台信息';
+    o_msg     := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+                 i_barcode || ';GS:' || i_goodstype || ';FS:' ||
+                 i_fromstation || ';TS:' || i_tostation|| ';BT:' || v_boxtype 
+                 || ';NQ:' || i_needqty || ';BQ:' || i_boxqty|| ';DT:' ||
+                 i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' ||
+                 v_ledtext;
+    RETURN;
+  END IF;
+
+  ---------------1.入库申请---------------------------
+    
+  IF (v_stationtype = 1) THEN
+      IF (i_goodstype = 2 AND i_tostation = 5225) THEN
+      SELECT COUNT(1)
+        INTO v_count
+        FROM wcs_taskinfo
+       WHERE taskno = i_taskno
+         AND warehouseid = i_warehouseid;
+      IF v_count = 1 THEN
+        SELECT ledtext
+          INTO v_ledtext
+          FROM wcs_taskinfo
+         WHERE taskno = i_taskno
+           AND warehouseid = i_warehouseid;
+       v_ledtext := replace(v_ledtext,';',',');
+      END IF;
+      wcs_updatetaskstatus_p(i_warehouseid,
+                             i_taskno,
+                             'STA',
+                             '1',
+                             '1',
+                             v_result);
+    
+      IF (v_result <> 0) THEN
+        v_tostation := 0;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位成功1!任务号:' ||
+                       i_taskno||'，终点站台值：'||v_tostation;
+      
+      ELSE
+        v_tostation := i_tostation;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位失败2!任务号:' ||
+                       i_taskno||'，终点站台值：'||v_tostation;
+      END IF;
+    END IF;
+  
+    IF (i_goodstype = 1) THEN
+      v_tostation := 0;
+      o_result    := 0;
+      v_ledtext   := i_tostation || '站台申请入库失败,单空托盘禁止入库';
+      o_msg       := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+                     i_barcode || ';GS:' || i_goodstype || ';FS:' ||
+                     i_fromstation || ';TS:' || i_tostation || ';BT:' ||
+                     v_boxtype || ';NQ:' || i_needqty || ';BQ:' || i_boxqty  || ';DT:' ||
+                     i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+      RETURN;
+    END IF;
+    IF i_taskno < 10000 THEN
+      IF (i_goodstype = 3) THEN
+        --空托盘组入库申请
+        wcs_getinboundtask_p(i_warehouseid,
+                             '99999999',
+                             i_tostation,
+                             'WCS',
+                             1,
+                             0,
+                             0,
+                             1,
+                             v_taskno,
+                             i_boxqty,
+                             i_items,
+                             i_boxstatus,
+                             v_result,
+                             v_taskno,
+                             v_tostation);
+      
+        IF (v_result = 1) THEN
+          wcs_updatetaskstatus_p(i_warehouseid,
+                                 v_taskno,
+                                 'STA',
+                                 '2',
+                                 '1',
+                                 v_result);
+        
+          v_ledtext := i_tostation || '站台空托盘申请入库任务成功,任务号:' || v_taskno;
+        ELSE
+          v_ledtext   := i_tostation || '站台空托盘申请入库任务失败';
+          v_tostation := i_tostation;
+        END IF;
+      END IF;
+    
+      IF (i_goodstype = 2) THEN
+        --产生入库任务
+        IF (TRIM(i_items) IS NOT NULL) THEN
+          v_itemflag := 1;
+        END IF;
+        wcs_getinboundtask_p(i_warehouseid,
+                             v_barcode,
+                             i_tostation,
+                             i_checkinfo,
+                             1,
+                             0,
+                             v_itemflag,
+                             0,
+                             v_taskno,
+                             i_boxqty,
+                             i_items,
+                             i_boxstatus,
+                             v_result,
+                             v_taskno,
+                             v_tostation);
+      
+        IF (v_result = 1) THEN
+          wcs_updatetaskstatus_p(i_warehouseid,
+                                 v_taskno,
+                                 'STA',
+                                 '2',
+                                 '1',
+                                 v_result);
+        
+          v_ledtext := i_tostation || '站台实托盘申请入库任务成功,任务号:' || v_taskno;
+        
+          SELECT COUNT(1)
+            INTO v_count
+            FROM wcs_jkinterface
+           WHERE stationnumber = i_tostation;
+        
+          IF v_count > 0 THEN
+            UPDATE wcs_jkinterface
+               SET sn          = '',
+                   errornumber = '',
+                   errorinfo   = '',
+                   palletcode  = '',
+                   qty         = 0,
+                   status      = '0'
+             WHERE stationnumber = i_tostation;
+            IF (SQL%ROWCOUNT < 1) THEN
+              v_ledtext := v_ledtext || '更改中软接口站台状态失败！';
+            END IF;
+          END IF;
+        ELSE
+          v_ledtext   := i_tostation || '站台实托盘申请入库任务失败！';
+          v_tostation := i_tostation;
+        END IF;
+      END IF;
+    END IF;
+    o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+             i_barcode || ';GS:' || i_goodstype || ';FS:' || i_fromstation ||
+             ';TS:' || v_tostation || ';BT:' || v_boxtype || ';NQ:'
+              || i_needqty || ';BQ:' || i_boxqty || ';DT:' || i_docktype 
+               || ';BS:' || i_boxstatus || ';SC:' || '0' || ';MSG:' || v_ledtext;
+  
+    wcs_createeventlog_p(i_warehouseid, o_msg);
+    END IF;
+
+  ---------------2.一楼码盘入库时同步处理空托盘组出库申请---------------------------
+   if (i_emptyneed > 0) then
+    for i in 1 .. i_emptyneed loop
+      WCS_PALLETOUTBOUND_P(i_warehouseid,
+                           '5042',
+                           'WCS',
+                           v_EmptyPalletResult);
+      if (v_EmptyPalletResult > 0) then
+        v_emptyout := v_emptyout + 1;
+      end if;
+    end loop;
+  end if;
+  
+  ---------------3.输送机出入库到位申请-----------------------
+  IF (v_stationtype = 3) THEN
+      SELECT COUNT(1)
+        INTO v_count
+        FROM wcs_taskinfo
+       WHERE taskno = i_taskno
+         AND warehouseid = i_warehouseid;
+      IF v_count = 1 THEN
+        SELECT ledtext
+          INTO v_ledtext
+          FROM wcs_taskinfo
+         WHERE taskno = i_taskno
+           AND warehouseid = i_warehouseid;
+       v_ledtext := replace(v_ledtext,';',',');
+      END IF;
+      wcs_updatetaskstatus_p(i_warehouseid,
+                             i_taskno,
+                             'STA',
+                             '1',
+                             '1',
+                             v_result);
+    
+      IF (v_result <> 0) THEN
+        v_tostation := 0;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位成功!任务号:' ||
+                       i_taskno;
+      
+      ELSE
+        v_tostation := i_tostation;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位失败!任务号:' ||
+                       i_taskno;
+      END IF;
+    o_msg := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+             i_barcode || ';GS:' || i_goodstype || ';FS:' || i_fromstation ||
+             ';TS:' || v_tostation || ';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+             i_boxqty || ';DT:' || i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+    wcs_createeventlog_p(i_warehouseid, o_msg);
+     END IF;
+     
+  ---------------4.拆跺站台申请---------------------------
+  IF (v_stationtype = 4) THEN
+    IF(i_goodstype =2 and i_taskno > 10000) THEN  --后期需要考虑线上各道口及总的分拣量，控制允许拆跺位
+      select replace(wt.tostation,'DockOut','')
+      into v_tosort
+      from wcs_taskinfo wt 
+      where wt.taskno = i_taskno
+      and wt.tasktype ='Task_PickOutBound'
+      and wt.warehouseid = i_warehouseid;
+      
+      select count(1)
+      into v_taskcount1
+      from wcs_fpitemcode fp
+      where fp.stationno = v_tosort;
+      
+      wcs_updatetaskstatus_p(i_warehouseid,
+                             i_taskno,
+                             'STA',
+                             '1',
+                             '1',
+                             v_result);
+    
+      IF (v_result <> 0) THEN
+        v_tostation := 0;
+        v_splitconfirm :=1;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位成功!任务号:' ||
+                       i_taskno;
+      
+      ELSE
+        v_tostation := i_tostation;
+          v_splitconfirm :=1;
+        v_ledtext   := v_ledtext || ',' || i_tostation || '站台到位失败!任务号:' ||
+                       i_taskno;
+      END IF;
+    ELSIF(i_goodstype =2 and i_taskno < 10000) THEN  
+       v_tostation := 0;
+         v_splitconfirm :=1;
+    ELSIF (i_goodstype = 4) THEN
+      IF (1 = 1) THEN
+        i_returntolocation_cp(i_warehouseid => i_warehouseid,
+                              i_wcstaskno   => i_taskno,
+                              i_station     => i_tostation,
+                              i_boxqty      => i_boxqty,
+                              o_ifsucess    => v_ifsucess,
+                              o_result      => v_taskinfo);
+      
+      ELSE
+        i_returntostation_cp(i_warehouseid => i_warehouseid,
+                             i_wcstaskno   => i_taskno,
+                             i_station     => i_tostation,
+                             o_ifsucess    => v_ifsucess,
+                             o_result      => v_taskinfo);
+       
+      END IF;
+      IF (v_ifsucess = 1) THEN
+        IF v_taskinfo IS NOT NULL THEN
+          LOOP
+            FETCH v_taskinfo
+              INTO v_wmstaskno,
+                   v_tasktypecode,
+                   v_equipmentnumber,
+                   v_sourceaddressid,
+                   v_sourceaddresstype,
+                   v_sourceaddresstext,
+                   v_targetaddressid,
+                   v_targetaddresstype,
+                   v_targetaddresstext,
+                   v_ledtext,
+                   v_containerid,
+                   v_containerbarcode,
+                   v_lgvexist,
+                   v_groupnumber,
+                   v_itemid,
+                   v_operationqty;
+            o_wmscount := v_taskinfo%ROWCOUNT;
+            EXIT WHEN v_taskinfo%NOTFOUND;
+          END LOOP;
+          wcs_createeventlog_p(i_warehouseid,
+                               'WCS调用WMS接口获取余料任务成功,返回条数:' ||
+                               o_wmscount);
+       
+        ELSE
+          o_wmscount := 0;
+          wcs_createeventlog_p(i_warehouseid,
+                               'WCS调用WMS接口获取余料任务失败,返回条数:' ||
+                               o_wmscount);
+     
+        END IF;
+        IF (o_wmscount = 1) THEN
+          --删除wcs_fpitemcode表数据 2019.5.15 插入时只插入了拣选部分，不用删除动作
+          /*DELETE wcs_fpitemcode
+           WHERE warehouseid = i_warehouseid
+             AND wavedetailid = v_taskno
+             AND sorted = 0;*/
+          wcs_gettaskno_p(i_warehouseid, v_taskno);
+          wcs_insertinboundtask_p(i_warehouseid,
+                                  v_wmstaskno,
+                                  v_containerbarcode,
+                                  v_sourceaddresstext,
+                                  v_targetaddresstext,
+                                  '100',
+                                  v_tasktypecode,
+                                  0,
+                                  v_ledtext,
+                                  '',
+                                  '',
+                                  '',
+                                  '',
+                                  '',
+                                  v_itemid,
+                                  '',
+                                  v_operationqty,
+                                  'WCS',
+                                  v_taskno, --WCS任务号
+                                  v_equipmentnumber, --WCS设备号
+                                  v_result);
+          IF (v_result = 1) THEN
+            --更新垛型到容器明细表
+            UPDATE containerinfo
+               SET field1 = i_boxstatus
+             WHERE warehouseid = i_warehouseid
+               AND containerid = v_containerid;
+          
+            wcs_updatetaskstatus_p(i_warehouseid,
+                                   v_taskno,
+                                   'STA',
+                                   '2',
+                                   '1',
+                                   v_result);
+            IF (v_result = 1) THEN
+              SELECT tostation
+                INTO v_tostation
+                FROM wcs_subtaskinfo
+               WHERE taskno = v_taskno
+                 AND taskstatus = '2'
+                 AND equipmenttype = 'STA'
+                 AND rownum < 2;
+              --v_tostation := v_targetaddresstext;
+              v_ledtext := i_tostation || '站台任务执行中成功,任务号:' || v_taskno ||
+                           '目标站台:' || v_tostation;
+            
+            ELSE
+              v_ledtext := i_tostation || '站台任务执行中失败,任务号:' || v_taskno;
+            END IF;
+          
+          ELSE
+            v_ledtext :='';
+            wcs_createeventlog_p(i_warehouseid,
+                                 i_tostation || '站台余料任务写入WCS任务失败！');
+           END IF;
+        END IF;
+      ELSE
+        v_ledtext := i_tostation || '站台余料处理失败！';
+        ROLLBACK;
+      END IF;
+  END IF;
+  o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+               i_barcode || ';GS:' || v_goodstype || ';FS:' || i_tostation ||
+               ';TS:' || v_tostation  ||  ';BT:' || v_boxtype || ';NQ:' || i_needqty  || ';BQ:' ||
+               i_boxqty || ';DT:' || i_docktype  || ';BS:' || i_boxstatus || ';SC:' || v_splitconfirm  || ';MSG:' || v_ledtext;
+  END IF;
+
+  ---------------5.RFID核对成功后更改目标地址---------------------------
+  IF (v_stationtype = 5) THEN
+    SELECT COUNT(1)
+      INTO v_count
+      FROM wcs_taskinfo
+     WHERE taskno = i_taskno -- RFID没有用起来，先不核对，barcode = i_barcode
+       AND warehouseid = i_warehouseid;
+    IF v_count = 1 THEN
+      SELECT tostation
+        INTO v_tostation
+        FROM wcs_taskinfo
+       WHERE taskno = i_taskno -- barcode = i_barcode
+         AND warehouseid = i_warehouseid;
+      IF i_tostation = '5152' THEN
+        SELECT tostation, fromstation
+          INTO v_tostation, v_fromstation
+          FROM wcs_subtaskinfo
+         WHERE taskno = i_taskno -- barcode = i_barcode
+           AND equipmenttype = 'STA'
+           AND warehouseid = i_warehouseid;
+      
+      ELSIF v_tostation <> '5125' AND i_tostation = '5117' THEN
+        --核对RFID时先将目标地址暂存在起始地址上面，到5128时将最终目标地址放回，5128站台的货物直接给直穿目的地址
+        IF v_tostation = '5210' THEN
+          v_fromstation := '5209';
+        ELSIF v_tostation = '5213' THEN
+          v_fromstation := '5211';
+        ELSE
+          SELECT COUNT(1)
+            INTO v_count
+            FROM wcs_equipmentstatus
+           WHERE equipmenttype = v_tostation;
+          IF v_count = 1 THEN
+            SELECT field2
+              INTO v_fromstation --机械手对应的直穿目的地
+              FROM wcs_equipmentstatus
+             WHERE equipmenttype = v_tostation;
+          ELSE
+            v_fromstation := 0;
+          END IF;
+        END IF;
+        v_tostation := '5128';
+        v_ledtext   := i_tostation || '站台到核对RFID成功!目标地址改为:' || v_tostation ||
+                       ',起始地址改为:' || v_fromstation;
+      ELSIF i_tostation = '5160' THEN
+        --5160过来的货物不需要直穿接货，直接给机械手对应站台目的地
+        SELECT COUNT(1)
+          INTO v_count
+          FROM wcs_equipmentstatus
+         WHERE equipmenttype = v_tostation;
+        IF v_count = 1 THEN
+          SELECT field1, i_tostation
+            INTO v_tostation, v_fromstation
+            FROM wcs_equipmentstatus
+           WHERE equipmenttype = v_tostation;
+        
+          v_ledtext := i_tostation || '站台到核对RFID成功!目标地址改为:' || v_tostation ||
+                       ',起始地址改为:' || v_fromstation;
+        ELSE
+          v_fromstation := 0;
+          v_tostation   := i_tostation;
+          v_ledtext     := i_tostation || '站台到核对RFID成功!没有找到对应的目标地址，任务号:' ||
+                           i_taskno;
+          o_msg         := i_tostation || '站台' || ';TN:' || i_taskno ||
+                           ';PN:' || i_barcode || ';GS:' || i_goodstype ||
+                           ';FS:' || v_fromstation || ';TS:' || v_tostation 
+                           ||';BT:' || v_boxtype ||  ';NQ:' || i_needqty || ';BQ:' || i_boxqty
+                           ||  ';DT:' || i_docktype  || ';BS:' || i_boxstatus || ';MSG:' || v_ledtext;
+          RETURN;
+        END IF;
+      END IF;
+    ELSE
+      v_ledtext := i_tostation || '站台核对RFID信息失败！没有找到合适的任务信息。';
+    END IF;
+    o_msg := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+             i_barcode || ';GS:' || i_goodstype || ';FS:' || v_fromstation ||
+             ';TS:' || v_tostation ||';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+             i_boxqty  || ';DT:' || i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+  END IF;
+
+  
+  IF (v_stationtype = 7) THEN
+    --其他站台入库申请
+    IF (i_goodstype = 1) THEN
+      v_tostation := 0;
+      o_result    := 0;
+      v_ledtext   := i_tostation || '站台申请入库失败,单空托盘禁止入库';
+      o_msg       := i_tostation || '站台' || ';TN:' || i_taskno || ';PN:' ||
+                     i_barcode || ';GS:' || i_goodstype || ';FS:' ||
+                     i_fromstation || ';TS:' || i_tostation || ';BT:' ||
+                     v_boxtype || ';NQ:' ||i_needqty || ';BQ:' || i_boxqty  || ';DT:' ||
+                     i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+      RETURN;
+    END IF;
+    IF i_taskno < 10000 THEN
+      IF (i_goodstype = 3) THEN
+        --空托盘组入库申请
+        wcs_getinboundtask_p(i_warehouseid,
+                             '99999999',
+                             i_tostation,
+                             'WCS',
+                             1,
+                             0,
+                             0,
+                             1,
+                             v_taskno,
+                             i_boxqty,
+                             i_items,
+                             i_boxstatus,
+                             v_result,
+                             v_taskno,
+                             v_tostation);
+      
+        IF (v_result = 1) THEN
+          wcs_updatetaskstatus_p(i_warehouseid,
+                                 v_taskno,
+                                 'STA',
+                                 '2',
+                                 '1',
+                                 v_result);
+        
+          v_ledtext := i_tostation || '站台空托盘申请入库任务成功,任务号:' || v_taskno;
+        ELSE
+          v_ledtext   := i_tostation || '站台空托盘申请入库任务失败';
+          v_tostation := i_tostation;
+        END IF;
+      END IF;
+    
+      IF i_goodstype = 2 THEN
+        --产生入库任务
+        v_insertwmsflag := 1;
+        IF i_tostation IN (5236) THEN
+          SELECT COUNT(1)
+            INTO v_count
+            FROM task t
+           WHERE t.sourcebilltype = 'RF_PGruopSet'
+             AND t.sourceaddresstext = i_tostation
+             AND statecode = 'Task_NotExecute';
+          IF (v_count > 0) THEN
+            v_insertwmsflag := 0;
+            v_barcode       := i_tostation;
+          ELSE
+            SELECT COUNT(1)
+              INTO v_count
+              FROM wcs_itemcode
+             WHERE rfidno = i_tostation
+               AND tobaccotype = '0';
+            IF v_count > 0 THEN
+              SELECT barcode
+                INTO v_barcode
+                FROM wcs_itemcode
+               WHERE rfidno = i_tostation
+                 AND tobaccotype = '0'
+                 AND rownum < 2;
+            ELSE
+              v_ledtext := i_tostation || '站台等待中软移动小车绑定托盘！';
+              o_msg     := i_tostation || '站台' || ';TN:' || v_taskno ||
+                           ';PN:' || i_barcode || ';GS:' || i_goodstype ||
+                           ';FS:' || v_fromstation || ';TS:' || v_tostation
+                           || ';BT:' || v_boxtype ||  ';NQ:' || i_needqty 
+                           || ';BQ:' || i_boxqty ||   ';DT:' || i_docktype 
+                            || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+            
+              wcs_createeventlog_p(i_warehouseid, o_msg);
+               RETURN;
+            END IF;
+          END IF;
+        ELSIF i_tostation = 5025 AND i_taskno > 9999 THEN
+          --质检任务直接获取任务
+          v_insertwmsflag := 0;
+        END IF;
+        IF (TRIM(i_items) IS NOT NULL) THEN
+          v_itemflag := 1;
+        END IF;
+        IF (i_tostation <> '5235') THEN
+          wcs_getinboundtask_p(i_warehouseid,
+                               v_barcode,
+                               i_tostation,
+                               'WCS',
+                               v_insertwmsflag,
+                               0,
+                               v_itemflag,
+                               0,
+                               v_taskno,
+                               i_boxqty,
+                               i_items,
+                               i_boxstatus,
+                               v_result,
+                               v_taskno,
+                               v_tostation);
+        END IF;
+      
+        IF (v_result = 1) THEN
+          wcs_updatetaskstatus_p(i_warehouseid,
+                                 v_taskno,
+                                 'STA',
+                                 '2',
+                                 '1',
+                                 v_result);
+        
+          v_ledtext := i_tostation || '站台实托盘申请入库任务成功,任务号:' || v_taskno;
+          UPDATE wcs_itemcode
+             SET tobaccotype = 1
+           WHERE barcode = v_barcode;
+        ELSE
+          v_ledtext := i_tostation || '站台实托盘申请入库任务失败！';
+          IF (i_tostation = 5025) THEN
+            v_tostation := 5026;
+          ELSE
+            v_tostation := 0;
+          END IF;
+        END IF;
+      END IF;
+      IF v_result = 1 AND i_tostation IN ('5235', '5236') AND
+         v_tostation NOT IN ('5235', '5236') THEN
+        v_fromstation := v_tostation;
+        v_tostation   := '5087'; --执行穿梭车目标地址，
+      END IF;
+    ELSIF i_tostation IN ('5235', '5236') THEN
+      wcs_updatetaskstatus_p(i_warehouseid,
+                             i_taskno,
+                             'STA',
+                             '1',
+                             '1',
+                             v_result);
+      IF (v_result <> 0) THEN
+        v_tostation := 0;
+        v_ledtext   := i_tostation || '站台到位成功!任务号:' || i_taskno;
+      ELSE
+        v_tostation := 0;
+        v_ledtext   := i_tostation || '站台到位失败!任务号:' || i_taskno;
+      END IF;
+    END IF;
+    o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+             i_barcode || ';GS:' || i_goodstype || ';FS:' || v_fromstation ||
+             ';TS:' || v_tostation ||
+             ';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+             i_boxqty || ';DT:' || i_docktype   || ';BS:' || i_boxstatus || ';SC:' || '0'   || ';MSG:' || v_ledtext;
+  
+    wcs_createeventlog_p(i_warehouseid, o_msg);
+    END IF;
+  ---------------9.散盘申请站台---------------------------------
+  IF (v_stationtype = 9) THEN
+    v_tostation := i_tostation;
+    --申请进入散盘工位并产生wms任务、产生库存
+    IF (i_goodstype = 2 AND i_tostation IN (5214, 5234)) THEN
+      SELECT COUNT(1)
+        INTO v_count
+        FROM wcs_fpitemcode
+       WHERE REPLACE(wavedetailid, ' ', '') = i_taskno
+         AND warehouseid = i_warehouseid
+         AND sorted = '0';
+      IF v_count = i_boxqty THEN
+        ---余料数量等于未分拣条码数量
+        FOR i IN 1 .. v_count LOOP
+          SELECT itemcode, field3
+            INTO v_itembarcode, v_barcode
+            FROM (SELECT itemcode, field3, rownum AS num
+                    FROM (SELECT itemcode, field3
+                            FROM wcs_fpitemcode
+                           WHERE REPLACE(wavedetailid, ' ', '') = i_taskno
+                             AND warehouseid = i_warehouseid
+                             AND sorted = '0'
+                           ORDER BY field1 DESC))
+           WHERE num = i;
+          v_items := v_items || v_itembarcode;
+        END LOOP;
+        IF (TRIM(v_items) IS NOT NULL) THEN
+          wcs_insertintoitemcode_p(i_warehouseid,
+                                   v_barcode,
+                                   v_taskno,
+                                   v_items,
+                                   i_tostation,
+                                   i_boxstatus,
+                                   i_boxqty,
+                                   'DISK',
+                                   v_result);
+          IF (v_result = 0) THEN
+            v_result := 0;
+            wcs_createeventlog_p(i_warehouseid,
+                                 '写入一号工程条码失败，任务号' || v_taskno || ',托盘条码' ||
+                                 v_barcode);
+            
+          ELSE
+            i_returntostation_cp(i_warehouseid => i_warehouseid,
+                                 i_wcstaskno   => i_taskno,
+                                 i_station     => i_tostation,
+                                 o_ifsucess    => v_ifsucess,
+                                 o_result      => v_taskinfo);
+            IF (v_ifsucess = 1) THEN
+              IF v_taskinfo IS NOT NULL THEN
+                LOOP
+                  FETCH v_taskinfo
+                    INTO v_wmstaskno,
+                         v_tasktypecode,
+                         v_equipmentnumber,
+                         v_sourceaddressid,
+                         v_sourceaddresstype,
+                         v_sourceaddresstext,
+                         v_targetaddressid,
+                         v_targetaddresstype,
+                         v_targetaddresstext,
+                         v_ledtext,
+                         v_containerid,
+                         v_containerbarcode,
+                         v_lgvexist,
+                         v_groupnumber,
+                         v_itemid,
+                         v_operationqty;
+                  o_wmscount := v_taskinfo%ROWCOUNT;
+                  EXIT WHEN v_taskinfo%NOTFOUND;
+                END LOOP;
+                wcs_createeventlog_p(i_warehouseid,
+                                     'WCS调用WMS接口获取余料进入暂存区任务成功,返回条数:' ||
+                                     o_wmscount);
+             
+              ELSE
+                o_wmscount := 0;
+                wcs_createeventlog_p(i_warehouseid,
+                                     'WCS调用WMS接口获取余料进入暂存区任务失败,返回条数:' ||
+                                     o_wmscount);
+                
+              END IF;
+              IF (o_wmscount = 1) THEN
+                --删除wcs_fpitemcode表数据
+                DELETE wcs_fpitemcode
+                 WHERE warehouseid = i_warehouseid
+                   AND wavedetailid = v_taskno
+                   AND sorted = 0;
+                wcs_insertinboundtask_p(i_warehouseid,
+                                        v_wmstaskno,
+                                        v_containerbarcode,
+                                        v_sourceaddresstext,
+                                        v_targetaddresstext,
+                                        '',
+                                        v_tasktypecode,
+                                        0,
+                                        v_ledtext,
+                                        '',
+                                        '',
+                                        '',
+                                        '',
+                                        '',
+                                        v_itemid,
+                                        '',
+                                        v_operationqty,
+                                        'WCS',
+                                        v_taskno, --WCS任务号
+                                        i_tostation, --WCS设备号
+                                        v_result);
+                IF (v_result = 1) THEN
+                  --更新垛型到容器明细表
+                  UPDATE containerinfo
+                     SET field1 = i_boxstatus
+                   WHERE warehouseid = i_warehouseid
+                     AND containerid = v_containerid;
+                
+                  wcs_updatetaskstatus_p(i_warehouseid,
+                                         v_taskno,
+                                         'STA',
+                                         '2',
+                                         '1',
+                                         v_result);
+                  IF (v_result = 1) THEN
+                    v_tostation := v_targetaddresstext;
+                    v_ledtext   := i_tostation || '站台任务执行中成功,任务号:' ||
+                                   v_taskno || '目标站台:' || v_tostation;
+                  
+                  ELSE
+                    v_ledtext := i_tostation || '站台任务执行中失败,任务号:' ||
+                                 v_taskno;
+                  END IF;
+                
+                ELSE
+                  
+                  wcs_createeventlog_p(i_warehouseid,
+                                       i_tostation ||
+                                       '站台余料进入暂存工位写入WCS任务失败！');
+                 
+                END IF;
+              END IF;
+            ELSE
+              v_ledtext := i_tostation || '站台进入余料暂存工位失败！';
+              ROLLBACK;
+            END IF;
+          END IF;
+        ELSE
+          v_ledtext := i_tostation || '站台进入余料暂存工位失败,没有找到需要余料回库的一号工程码！';
+        END IF;
+      ELSE
+        v_ledtext := i_tostation || '站台进入余料暂存工位失败,需要回库的一号工程码数量与剩余数量不一致！';
+      END IF;
+    
+      o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+               i_barcode || ';GS:' || v_goodstype || ';FS:' || i_tostation ||
+               ';TS:' || v_tostation  ||  ';BT:' || v_boxtype || ';NQ:' || i_needqty  || ';BQ:' ||
+               i_boxqty || ';DT:' || i_docktype  || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+    ELSIF i_goodstype = 2 AND i_taskno >= 10000 THEN
+      --到位后完成任务
+      wcs_updatetaskstatus_p(i_warehouseid,
+                             i_taskno,
+                             'STA',
+                             '1',
+                             '1',
+                             v_result);
+      IF (v_result = 1) THEN
+        v_tostation := 0;
+        v_ledtext   := i_tostation || '站台任务完成成功,任务号:' || v_taskno;
+      
+      ELSE
+        v_ledtext := i_tostation || '站台任务完成失败,任务号:' || v_taskno;
+      END IF;
+    
+      o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+               i_barcode || ';GS:' || v_goodstype || ';FS:' || i_tostation ||
+               ';TS:' || v_tostation ||   ';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+               i_boxqty  || ';DT:' || i_docktype  || ';BS:' || i_boxstatus  || ';MSG:' || v_ledtext;
+    ELSIF i_goodstype = 4 AND i_taskno < 10000 THEN
+      --下班后申请散盘移入高架库，产生wms任务
+      i_createmovetask_cp(i_warehouseid => i_warehouseid,
+                          i_stationno   => i_tostation,
+                          o_ifsucess    => v_ifsucess,
+                          o_result      => v_taskinfo);
+      IF (v_ifsucess = 1) THEN
+        IF v_taskinfo IS NOT NULL THEN
+          LOOP
+            FETCH v_taskinfo
+              INTO v_wmstaskno,
+                   v_tasktypecode,
+                   v_equipmentnumber,
+                   v_sourceaddressid,
+                   v_sourceaddresstype,
+                   v_sourceaddresstext,
+                   v_targetaddressid,
+                   v_targetaddresstype,
+                   v_targetaddresstext,
+                   v_ledtext,
+                   v_containerid,
+                   v_containerbarcode,
+                   v_lgvexist,
+                   v_groupnumber,
+                   v_itemid,
+                   v_operationqty;
+            o_wmscount := v_taskinfo%ROWCOUNT;
+            EXIT WHEN v_taskinfo%NOTFOUND;
+          END LOOP;
+          wcs_createeventlog_p(i_warehouseid,
+                               'WCS调用WMS接口获取余料进入高架库任务成功,返回条数:' ||
+                               o_wmscount);
+         
+        ELSE
+          o_wmscount := 0;
+          wcs_createeventlog_p(i_warehouseid,
+                               'WCS调用WMS接口获取余料进入高架库任务失败,返回条数:' ||
+                               o_wmscount);
+      
+        END IF;
+        IF (o_wmscount = 1) THEN
+          --获取WCS任务号
+          wcs_gettaskno_p(i_warehouseid, v_taskno);
+        
+          wcs_insertinboundtask_p(i_warehouseid,
+                                  v_wmstaskno,
+                                  v_containerbarcode,
+                                  v_sourceaddresstext,
+                                  v_targetaddresstext,
+                                  '',
+                                  v_tasktypecode,
+                                  0,
+                                  v_ledtext,
+                                  '',
+                                  '',
+                                  '',
+                                  '',
+                                  '',
+                                  v_itemid,
+                                  '',
+                                  v_operationqty,
+                                  'WCS',
+                                  v_taskno, --WCS任务号
+                                  v_equipmentnumber, --WCS设备号
+                                  v_result);
+          IF (v_result = 1) THEN
+            SELECT tostation
+              INTO v_tostation
+              FROM wcs_subtaskinfo
+             WHERE taskno = v_taskno
+               AND taskstatus = '0'
+               AND equipmenttype = 'STA'
+               AND rownum < 2;
+          
+            wcs_updatetaskstatus_p(i_warehouseid,
+                                   v_taskno,
+                                   'STA',
+                                   '2',
+                                   '1',
+                                   v_result);
+            IF (v_result = 1) THEN
+              v_ledtext   := i_tostation || '站台任务执行中成功,任务号:' || v_taskno ||
+                             '目标站台:' || v_tostation;
+              v_tostation := '5149'; --穿梭车目标站台
+            ELSE
+              v_ledtext := i_tostation || '站台任务执行中失败,任务号:' || v_taskno;
+            END IF;
+          
+          ELSE
+            v_ledtext :='';
+            wcs_createeventlog_p(i_warehouseid,
+                                 i_tostation || '站台余料进入暂存工位写入WCS任务失败！');
+             END IF;
+        END IF;
+      ELSE
+        v_ledtext := i_tostation || '站台进入余料暂存工位失败！';
+        ROLLBACK;
+      END IF;
+    
+      o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+               i_barcode || ';GS:' || v_goodstype || ';FS:' || i_tostation ||
+               ';TS:' || v_tostation || ';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+               i_boxqty  || ';DT:' || i_docktype || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+    END IF;
+    wcs_createeventlog_p(i_warehouseid, o_msg);
+  END IF;
+
+  ---------------10.质检站台申请---------------------------------
+  IF (v_stationtype = 10) THEN
+    IF (length(v_taskno) < 5) THEN
+      v_tostation := 0;
+    ELSE
+      SELECT COUNT(1)
+        INTO v_result
+        FROM wcs_taskinfo
+       WHERE warehouseid = i_warehouseid
+         AND taskno = v_taskno;
+      IF (v_result = 1) THEN
+        --在当前WCS表能找到记录，表示质检、盘点、异常到位
+        v_result := 0;
+        SELECT ledtext, barcode,wt.tasktype
+          INTO v_ledtext, v_barcode,v_tasktypecode
+          FROM wcs_taskinfo wt 
+         WHERE warehouseid = i_warehouseid
+           AND taskno = v_taskno;
+       IF(v_tasktypecode in ('Task_QCOutBound','Task_CountOutBound','Task_OutBound')) THEN
+        wcs_updatetaskstatus_p(i_warehouseid,
+                               v_taskno,
+                               'STA',
+                               '1',
+                               '1',
+                               v_result);
+                               
+        IF (v_result <> 0) THEN
+          v_tostation := 0;
+          v_ledtext := '质检出库到位:' ||v_ledtext  || ',任务号:' || v_taskno;
+          v_ledtext := replace(v_ledtext,';',',');
+        ELSE
+          v_tostation := i_tostation;
+        END IF;
+        ELSIF(v_tasktypecode = 'Task_InBound') THEN
+           SELECT tostation
+              INTO v_tostation
+              FROM wcs_subtaskinfo
+             WHERE taskno = v_taskno
+               AND equipmenttype = 'STA'
+               AND rownum < 2;
+        END IF;
+      ELSE
+        v_insertwmsflag := 0;
+        wcs_getinboundtask_p(i_warehouseid,
+                             v_barcode,
+                             i_tostation,
+                             'WCS',
+                             v_insertwmsflag,
+                             0,
+                             v_itemflag,
+                             0,
+                             v_taskno,
+                             i_boxqty,
+                             i_items,
+                             i_boxstatus,
+                             v_result,
+                             v_taskno,
+                             v_tostation);
+      
+        IF (v_result = 1) THEN
+          wcs_updatetaskstatus_p(i_warehouseid,
+                                 v_taskno,
+                                 'STA',
+                                 '2',
+                                 '1',
+                                 v_result);
+        
+          v_ledtext := i_tostation || '站台实托盘申请质检盘点回库任务成功,任务号:' || v_taskno;
+        END IF;
+      END IF;
+    END IF;
+    o_msg := i_tostation || '站台' || ';TN:' || v_taskno || ';PN:' ||
+             i_barcode || ';GS:' || i_goodstype || ';FS:' || i_tostation ||
+             ';TS:' || v_tostation ||';BT:' || v_boxtype || ';NQ:' || i_needqty || ';BQ:' ||
+             i_boxqty   || ';DT:' || v_boxstatus || ';BS:' || i_boxstatus || ';SC:' || '0'  || ';MSG:' || v_ledtext;
+  END IF;
+
+  IF (length(o_msg) < 11) THEN
+    ROLLBACK;
+  ELSE
+    o_result := 1;
+  END IF;
+EXCEPTION
+  WHEN no_data_found THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_createeventlog_p(i_warehouseid,
+                         '站台' || i_tostation || '申请失败，出现异常');
+    
+  WHEN OTHERS THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_createeventlog_p(i_warehouseid,
+                         '站台' || i_tostation || '申请失败，出现异常' || SQLERRM);
+   
+END wcs_gettask_p;

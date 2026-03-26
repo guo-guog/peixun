@@ -1,0 +1,74 @@
+CREATE OR REPLACE PROCEDURE wcs_getinboundtask_p(i_warehouseid        IN wcs_taskinfo.warehouseid%TYPE, --仓库编号
+                                                 i_barcode            IN VARCHAR2, --托盘条码
+                                                 i_fromstation        IN wcs_taskinfo.fromstation%TYPE, --起始地址
+                                                 i_userid             IN VARCHAR2, --用户编码
+                                                 i_insertwmsflag      IN INTEGER, --是否需要产生WMS入库任务
+                                                 i_insertstvflag      IN NUMBER, --是否需要写入穿梭车任务
+                                                 i_insertitemcodeflag IN NUMBER, --是否需要写入一号工程条码
+                                                 i_emptypalletinbound IN NUMBER, --是否是空托盘组入库
+                                                 i_taskno             IN INTEGER, --PLC产生的任务号
+                                                 i_boxqty          IN INTEGER, --是否通过货型检测和条码读取
+                                                 i_itemcodes          IN VARCHAR2, --物料条码集,
+                                                 i_docktype           IN VARCHAR2, --垛形
+                                                 o_result             OUT INTEGER, --执行成功标志
+                                                 o_taskno             OUT INTEGER, --返回的任务号
+                                                 o_tostation          OUT VARCHAR2 --返回的目标站台
+                                                 ) AS
+  /***********************************************************************
+   Author: Joho
+   Name：wcs_getinboundtask_p
+   CreateDate:   2017/08/31 15:31:25
+   Description： 产生各个库区入库任务
+   Apply Warehouse： 武汉成品库
+   **********************************************************************/
+BEGIN
+  IF (i_warehouseid = '57274b9c55464753b8bd7a0df96421f2') THEN --片烟库
+    wcs_getinboundtaskpy_p(i_warehouseid,
+                           i_barcode,
+                           i_fromstation,
+                           i_userid,
+                           i_insertwmsflag,
+                           i_insertstvflag,
+                           i_insertitemcodeflag,
+                           i_emptypalletinbound,
+                           i_taskno,
+                           i_boxqty,
+                           i_itemcodes,
+                           o_result,
+                           o_taskno,
+                           o_tostation);
+  END IF;
+  IF (i_warehouseid = '8328b8331dbd42599c786684c1e304a3') THEN  --成品库
+    wcs_getinboundtaskcp_p(i_warehouseid,
+                           i_barcode,
+                           i_fromstation,
+                           i_userid,
+                           i_insertwmsflag,
+                           i_insertstvflag,
+                           i_insertitemcodeflag,
+                           i_emptypalletinbound,
+                           i_taskno,
+                           i_boxqty,
+                           i_itemcodes,
+                           i_docktype,
+                           o_result,
+                           o_taskno,
+                           o_tostation);
+  END IF;
+  IF (i_warehouseid = '6343d09d35a641e0a9ad942a255d4707') THEN  --辅料库
+    wcs_getinboundtaskfl_p(i_warehouseid,
+                           i_barcode,
+                           i_fromstation,
+                           i_userid,
+                           i_insertwmsflag,
+                           i_insertstvflag,
+                           i_insertitemcodeflag,
+                           i_emptypalletinbound,
+                           i_taskno,
+                           i_boxqty,
+                           i_itemcodes,
+                           o_result,
+                           o_taskno,
+                           o_tostation);
+  END IF;
+END wcs_getinboundtask_p;

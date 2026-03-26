@@ -1,0 +1,70 @@
+CREATE OR REPLACE PROCEDURE "WCS_SCGETINBOUNDTASK_P" (i_warehouseid     IN wcs_taskinfo.warehouseid%TYPE,
+                                                        i_equipmentnumber IN wcs_subtaskinfo.equipmentnumber%TYPE,
+                                                        i_userid          IN VARCHAR2, --调用标志，ST或者SC
+                                                        o_result          OUT INTEGER,
+                                                        o_inboundtask     OUT sys_refcursor) AS
+  v_taskstatus    wcs_taskinfo.taskstatus%TYPE;
+  v_equipmenttype wcs_subtaskinfo.equipmenttype%TYPE;
+  v_tasktype      wcs_taskinfo.tasktype%TYPE;
+  v_runstatus     wcs_subtaskinfo.runstatus%TYPE;
+  v_taskincount   INTEGER;
+BEGIN
+  v_taskstatus    := '0';
+  v_runstatus     := '1';
+  v_equipmenttype := 'SC';
+  o_result        := 0;
+  v_tasktype      := 'Task_InBound';
+
+  --o_inboundtask :=NULL;
+  SELECT COUNT(*)
+    INTO v_taskincount
+    FROM wcs_subtaskinfo
+   WHERE warehouseid = i_warehouseid
+     AND equipmentnumber = i_equipmentnumber
+     AND equipmenttype = v_equipmenttype
+     AND taskstatus = v_taskstatus
+     AND runstatus = v_runstatus
+     AND taskno IN
+         (SELECT taskno FROM wcs_taskinfo WHERE tasktype = v_tasktype);
+
+  IF (v_taskincount > 0) THEN
+    --获取堆垛机的入库任务
+    OPEN o_inboundtask FOR
+      SELECT taskno, fromstation, tostation, barcode
+        FROM (SELECT taskno, fromstation, tostation, barcode
+                FROM wcs_subtaskinfo
+               WHERE warehouseid = i_warehouseid
+                 AND equipmentnumber = i_equipmentnumber
+                 AND equipmenttype = v_equipmenttype
+                 AND taskstatus = v_taskstatus
+                 AND runstatus = v_runstatus
+                 AND taskno IN (SELECT taskno
+                                  FROM wcs_taskinfo
+                                 WHERE tasktype = v_tasktype)
+               ORDER BY createtime)
+       WHERE ROWNUM < 2;
+
+    o_result := 1;
+  ELSE
+    if (v_taskincount = 0) then
+
+      o_result := 0;
+    else
+      wcs_createeventlog_p(i_warehouseid,
+                           '入库，wcs获取堆垛机任务有多条，无法判断该发送哪条任务，请进行核对' ||
+                           ',堆垛机编号:' || i_equipmentnumber);
+      o_result := 0;
+    end if;
+  END IF;
+EXCEPTION
+  WHEN NO_DATA_FOUND THEN
+    o_result := 0;
+    NULL;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_scgetinboundtask_p出错,找不到数据');
+  WHEN OTHERS THEN
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_scgetinboundtask_p出错:' ||
+                                      SQLERRM);
+END wcs_scgetinboundtask_p;
+

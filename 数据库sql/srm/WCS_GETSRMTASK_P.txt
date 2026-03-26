@@ -1,0 +1,46 @@
+CREATE OR REPLACE PROCEDURE "WCS_GETSRMTASK_P" (
+   i_warehouseid   IN       wcs_taskinfo.warehouseid%TYPE,          --仓库编号
+   o_taskcur       OUT      sys_refcursor,
+   o_result        OUT      INTEGER
+)
+IS
+BEGIN
+   OPEN o_taskcur FOR
+      SELECT   stk.taskno, tk.wmstaskno, tk.tasktype,
+               CASE stk.taskstatus
+                  WHEN '0'
+                     THEN 'aa'
+                  WHEN '1'
+                     THEN 'vv'
+                  WHEN '2'
+                     THEN 'ss'
+               END taskstatus,
+               stk.fromstation, stk.tostation, stk.currentstation,
+               stk.runstatus, stk.barcode, stk.equipmentnumber
+          FROM wcs_subtaskinfo stk, wcs_taskinfo tk
+         WHERE stk.warehouseid = i_warehouseid
+           AND stk.taskno = tk.taskno
+           AND stk.equipmentnumber LIKE 'SC%'
+      ORDER BY stk.subtaskno;
+
+   --commit;
+   o_result := 1;
+EXCEPTION
+   WHEN NO_DATA_FOUND
+   THEN
+      o_result := 0;
+      ROLLBACK;
+      wcs_addsystemlog
+                      (i_warehouseid      => i_warehouseid,
+                       i_logtext          => '存储过程wcs_getsrmtask_p报错,找不到数据'
+                      );
+   WHEN OTHERS
+   THEN
+      o_result := 0;
+      ROLLBACK;
+      wcs_addsystemlog (i_warehouseid      => i_warehouseid,
+                        i_logtext          =>    '存储过程wcs_getsrmtask_p报错:'
+                                              || SQLERRM
+                       );
+END wcs_getsrmtask_p;
+

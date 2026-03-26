@@ -1,0 +1,279 @@
+CREATE OR REPLACE PROCEDURE wcs_updatetaskstatus_p(i_warehouseid   IN wcs_subtaskinfo.warehouseid%TYPE, --仓库ID
+                                                   i_taskno        IN wcs_subtaskinfo.taskno%TYPE, --任务号
+                                                   i_equipmenttype IN wcs_subtaskinfo.equipmenttype%TYPE, --设备类型
+                                                   i_taskstatus    IN wcs_subtaskinfo.taskstatus%TYPE, --0未开始，1表示任务完成，2表示任务执行中
+                                                   i_runstatus     IN wcs_subtaskinfo.runstatus%TYPE, --0表示不可执行，1表示可执行
+                                                   o_result        OUT INTEGER --修改主从任务的状态
+                                                   ) IS
+  /***********************************************************************
+  Author: Joho
+  Name：wcs_gettask_p
+  CreateDate:   2017/08/31 15:31:25
+  Description： 更新任务状态
+  Apply Warehouse： 蚌埠成品库
+  **********************************************************************/
+
+  tmprcount           INTEGER; --WCS子任务处理完成标识
+  v_wmstaskno         VARCHAR(50); --WMS任务号
+  v_taskcount         INTEGER; --任务是否存在标识
+  v_result            INTEGER; --修改WMS任务标识
+  v_sccurrposition    VARCHAR2(50); -- 修改SC当前位置
+  v_scequipmentnumber VARCHAR2(50); --设备编号
+  v_finishflag        INTEGER; --调用WMS接口处理标识
+  v_tasktype          wcs_taskinfo.tasktype%TYPE; --任务类型
+  v_fromstation       VARCHAR2(20);
+BEGIN
+  v_result            := 0;
+  v_sccurrposition    := '';
+  v_scequipmentnumber := '';
+  v_finishflag        := 0;
+  --判断WCS是否存在该任务
+  SELECT COUNT(1)
+    INTO tmprcount
+    FROM wcs_taskinfo
+   WHERE warehouseid = i_warehouseid
+     AND taskno = i_taskno;
+
+  IF tmprcount = 1 THEN
+    SELECT tasktype, wmstaskno, fromstation
+      INTO v_tasktype, v_wmstaskno, v_fromstation
+      FROM wcs_taskinfo
+     WHERE warehouseid = i_warehouseid
+       AND taskno = i_taskno;
+  ELSIF tmprcount = 0 THEN
+    o_result := 1;
+    RETURN;
+  ELSE
+    o_result := 0;
+    --写入WCS事件日志
+    wcs_createeventlog_p(i_warehouseid,
+                         'WCS修改任务状态失败，查询到多条任务，WCS任务号:' || i_taskno ||
+                         '设备类型:' || i_equipmenttype || '任务状态:' ||
+                         i_taskstatus || '任务数:' || tmprcount);
+    RETURN;
+  END IF;
+
+  IF i_equipmenttype = 'GLB' AND i_taskstatus = '0' THEN
+    SELECT COUNT(1)
+      INTO v_taskcount
+      FROM wcs_subtaskinfo
+     WHERE warehouseid = i_warehouseid
+       AND taskno = i_taskno
+       AND taskstatus <> 0;
+    IF v_taskcount > 0 THEN
+      --写入WCS事件日志
+      wcs_createeventlog_p(i_warehouseid,
+                           'WCS主任务状态失败，有执行中的子任务，WCS任务号:' || i_taskno);
+      RETURN;
+    ELSE
+      UPDATE wcs_taskinfo
+         SET taskstatus = 0
+       WHERE warehouseid = i_warehouseid
+         AND taskno = i_taskno;
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+        --写入WCS事件日志
+        wcs_createeventlog_p(i_warehouseid,
+                             'WCS修改主任务状态成功，WCS任务号:' || i_taskno || '设备类型:' ||
+                             i_equipmenttype || '任务状态:' || i_taskstatus);
+        RETURN;
+      ELSE
+        raise_application_error(-20000,
+                                '任务号TaskNo:' || i_taskno || ' 修改主任务状态失败');
+      END IF;
+    END IF;
+  END IF;
+
+  --更新WCS子任务状态
+  UPDATE wcs_subtaskinfo
+     SET taskstatus = i_taskstatus,
+         updatetime = SYSDATE,
+         runstatus  = i_runstatus
+   WHERE warehouseid = i_warehouseid
+     AND taskno = i_taskno
+     AND equipmenttype = i_equipmenttype;
+
+  IF (SQL%ROWCOUNT > 0) THEN
+    o_result := 1;
+    --写入WCS事件日志
+    wcs_createeventlog_p(i_warehouseid,
+                         'WCS修改明细任务状态成功，WCS任务号:' || i_taskno || '设备类型:' ||
+                         i_equipmenttype || '任务状态:' || i_taskstatus);
+  ELSE
+    raise_application_error(-20000,
+                            '任务号TaskNo:' || i_taskno || ' 修改明细任务状态失败');
+  END IF;
+
+  IF (i_taskstatus = '2') THEN
+    --查询WCS主任务是否存在该任务
+    SELECT COUNT(1)
+      INTO v_taskcount
+      FROM wcs_taskinfo
+     WHERE warehouseid = i_warehouseid
+       AND taskno = i_taskno
+       AND taskstatus = i_taskstatus;
+  
+    --如果主任务已经处于执行中，则不需要修改
+    IF (v_taskcount = 0) THEN
+      --更新WCS主任务状态
+      UPDATE wcs_taskinfo
+         SET taskstatus = i_taskstatus, updatetime = SYSDATE
+       WHERE warehouseid = i_warehouseid
+         AND taskno = i_taskno;
+    
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+        --写入WCS事件日志
+        wcs_createeventlog_p(i_warehouseid,
+                             'WCS修改主任务状态为执行中，WCS任务号:' || i_taskno);
+      ELSE
+        o_result := 0;
+      END IF;
+    
+      i_updatetaskstate(i_warehouseid, v_wmstaskno, v_result);
+    
+      IF (v_result = 0) THEN
+        --在WCS主表里面标记WMS任务修改失败
+        UPDATE wcs_taskinfo
+           SET wmstaskflag = 'WMS任务执行中失败'
+         WHERE warehouseid = i_warehouseid
+           AND taskno = i_taskno;
+      
+        --写入WCS事件日志
+        wcs_createeventlog_p(i_warehouseid,
+                             'WCS修改任务状态为执行中时，修改WMS的状态失败，WMS任务号:' ||
+                             v_wmstaskno || '失败原因请查看WMS系统日志');
+      ELSE
+        UPDATE wcs_taskinfo
+           SET wmstaskflag = 'WMS任务执行中成功'
+         WHERE warehouseid = i_warehouseid
+           AND taskno = i_taskno;
+      END IF;
+    END IF;
+  END IF;
+
+  IF (i_taskstatus = '1') THEN
+    --堆垛机出库完成任务时，第一次调用WMS完成任务接口
+    IF (i_equipmenttype = 'SC' AND
+       i_warehouseid <> '57274b9c55464753b8bd7a0df96421f2' AND
+       v_tasktype NOT IN
+       ('Task_InBound', 'Task_QCInBound', 'Task_CountInBound')) THEN
+      SELECT count(1)
+        INTO tmprcount
+        FROM task
+       WHERE tasknumber = v_wmstaskno
+         AND statecode = 'Task_Executing';
+      IF tmprcount = 0 THEN
+        i_updatetaskstate(i_warehouseid, v_wmstaskno, v_finishflag);
+         wcs_createeventlog_p(i_warehouseid,
+                             '堆垛机完成任务后，发现WMS任务状态异常，重新更新为执行中，WMS任务号:' || v_wmstaskno ||
+                             ',WCS任务号' || i_taskno);
+      END IF;
+      SELECT count(1)
+        INTO tmprcount
+        FROM task
+       WHERE tasknumber = v_wmstaskno
+         AND statecode = 'Task_PartExecute';
+      IF tmprcount = 0 THEN
+        i_firstfinishtask(i_warehouseid, v_wmstaskno, v_finishflag);
+      ELSE
+        v_finishflag := 1;
+      END IF;
+    
+      IF (v_finishflag > 0) THEN
+        --写入WCS事件日志
+        wcs_createeventlog_p(i_warehouseid,
+                             '堆垛机完成任务后，第一次完成WMS任务成功，WMS任务号:' || v_wmstaskno ||
+                             ',WCS任务号' || i_taskno);
+      ELSE
+        wcs_createeventlog_p(i_warehouseid,
+                             '堆垛机完成任务后，第一次完成WMS任务失败，WMS任务号:' || v_wmstaskno ||
+                             ',WCS任务号' || i_taskno);
+      END IF;
+    END IF;
+  
+    --接口调用结束。
+    SELECT COUNT(1)
+      INTO tmprcount
+      FROM wcs_subtaskinfo
+     WHERE warehouseid = i_warehouseid
+       AND taskno = i_taskno
+       AND taskstatus <> '1';
+  
+    /*IF (i_equipmenttype = 'SC' AND
+        i_warehouseid <> 'c33e133ef973456cac98ff75bfc0d55f') THEN
+       --完成任务时，修改堆垛机当前位置为完成任务货位号------------------------
+       SELECT equipmentnumber
+         INTO v_scequipmentnumber
+         FROM wcs_subtaskinfo
+        WHERE warehouseid = i_warehouseid
+          AND taskno = i_taskno
+          AND equipmenttype = i_equipmenttype;
+     
+       SELECT tostation
+         INTO v_sccurrposition
+         FROM wcs_subtaskinfo
+        WHERE warehouseid = i_warehouseid
+          AND taskno = i_taskno
+          AND equipmenttype = i_equipmenttype;
+     
+    \*   UPDATE equipment
+          SET containerinfobarcode = '',
+              wcstaskno            = '',
+              wcseqposition        = v_sccurrposition,
+              wcstaskaccept        = 'TA',
+              createtime           = SYSDATE
+        WHERE warehouseid = i_warehouseid
+          AND wcstypecode = 'WCSEquipment_AS'
+          AND equipmentnumber = v_scequipmentnumber;*\
+     
+     END IF;*/
+  
+    ------------------------------------------------------------------------
+    IF (tmprcount = 0) THEN
+      --如果整个任务完成，那么调用调用完成任务的存储过程
+      wcs_finishtask_p(i_warehouseid, i_taskno, v_wmstaskno, o_result);
+    ELSE
+      --如果只是部分任务完成则将任务传递到下一个设备继续执行
+      UPDATE wcs_subtaskinfo
+         SET runstatus = '1', updatetime = SYSDATE
+       WHERE warehouseid = i_warehouseid
+         AND taskno = i_taskno
+         AND fromstation = (SELECT tostation
+                              FROM wcs_subtaskinfo
+                             WHERE equipmenttype = i_equipmenttype
+                               AND warehouseid = i_warehouseid
+                               AND taskno = i_taskno);
+    
+      IF (SQL%ROWCOUNT > 0) THEN
+        o_result := 1;
+      ELSE
+        raise_application_error(-20000,
+                                '任务号TaskNo:' || i_taskno ||
+                                ' 修改下条子任务执行状态失败');
+      END IF;
+    END IF;
+  END IF;
+
+  IF (o_result = 1) THEN
+    COMMIT;
+    --写入WCS事件日志
+    wcs_createeventlog_p(i_warehouseid,
+                         '任务号:' || i_taskno || ',设备类型:' || i_equipmenttype ||
+                         ',任务状态:' || i_taskstatus || ',执行成功:');
+  ELSE
+    ROLLBACK;
+  END IF;
+EXCEPTION
+  WHEN no_data_found THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_updatetaskstatus_p出错,找不到数据.');
+  WHEN OTHERS THEN
+    o_result := 0;
+    ROLLBACK;
+    wcs_addsystemlog(i_warehouseid => i_warehouseid,
+                     i_logtext     => '存储过程wcs_updatetaskstatus_p出错:' ||
+                                      SQLERRM);
+END wcs_updatetaskstatus_p;
